@@ -19,7 +19,6 @@ public sealed class BotConfig
     public string RepoBranch { get; set; } = "master";
     public string RepoRemoteName { get; set; } = "origin";
     public string? RepoSshKeyPath { get; set; }
-    public string? RepoSshPubkeyPath { get; set; }
     public string? RepoSshPassphrase { get; set; }
 
     // Flutter / build flags
@@ -96,7 +95,6 @@ public sealed class BotConfig
         cfg.RepoBranch = Env("REPO_BRANCH", cfg.RepoBranch);
         cfg.RepoRemoteName = Env("REPO_REMOTE_NAME", cfg.RepoRemoteName);
         cfg.RepoSshKeyPath = EnvOrNull("REPO_SSH_KEY_PATH", cfg.RepoSshKeyPath);
-        cfg.RepoSshPubkeyPath = EnvOrNull("REPO_SSH_PUBKEY_PATH", cfg.RepoSshPubkeyPath);
         cfg.RepoSshPassphrase = EnvOrNull("REPO_SSH_PASSPHRASE", cfg.RepoSshPassphrase);
 
         // Flutter

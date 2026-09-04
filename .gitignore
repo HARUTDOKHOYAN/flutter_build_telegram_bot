@@ -47,6 +47,13 @@ ScaffoldingReadMe.txt
 *~
 CodeCoverage/
 
+# BuildChatBot secrets and runtime files
+env.local
+cache/
+src/cache/
+chatbot
+chatbot.pub
+
 # MSBuild Binary and Structured Log
 *.binlog
 

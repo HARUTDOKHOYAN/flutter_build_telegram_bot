@@ -73,9 +73,15 @@ public sealed class ReleaseScriptRunner(BotConfig config, ILogger<ReleaseScriptR
 
         if (!File.Exists(script))
         {
-            var msg = $"Release script not found at {script}. " +
-                      $"Expected RELEASE_SCRIPT_PATH ('{config.ReleaseScriptPath}') " +
-                      $"relative to REPO_PATH ('{config.RepoPath}') unless absolute.";
+            // The usual cause is not a wrong path but a wrong branch: the script is committed on
+            // one branch and REPO_BRANCH points at another, so the checkout simply has no such file.
+            var msg = $"Release script not found at {script}.\n" +
+                      $"RELEASE_SCRIPT_PATH ('{config.ReleaseScriptPath}') is resolved " +
+                      $"relative to REPO_PATH ('{config.RepoPath}') unless absolute.\n" +
+                      $"The bot builds branch '{config.RepoBranch}'. Check that the script is " +
+                      $"committed on that branch:\n" +
+                      $"  git -C \"{config.RepoPath}\" ls-tree -r --name-only " +
+                      $"origin/{config.RepoBranch} | grep {config.ReleaseScriptPath}";
             log.LogError("{Message}", msg);
             TryWriteAllText(logFile, msg);
             var (v, b) = ReadCurrentVersion();

@@ -73,12 +73,35 @@ public sealed class GitService(BotConfig config, ILogger<GitService> log)
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
 
-        // Honour the configured SSH key if the user pointed at one.
+        // The bot has no terminal, so git must never stop to ask a human anything.
+        // Without this, a passphrase-protected key or an HTTPS remote makes the build hang forever.
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+
+        var sshOptions = new List<string>();
         if (!string.IsNullOrWhiteSpace(config.RepoSshKeyPath))
         {
-            psi.Environment["GIT_SSH_COMMAND"] =
-                $"ssh -i \"{config.RepoSshKeyPath}\" -o IdentitiesOnly=yes";
+            sshOptions.Add($"-i \"{config.RepoSshKeyPath}\"");
+            sshOptions.Add("-o IdentitiesOnly=yes");
         }
+
+        if (!string.IsNullOrWhiteSpace(config.RepoSshPassphrase))
+        {
+            // Feed the passphrase through SSH_ASKPASS. The passphrase reaches ssh through the
+            // child's environment only — the helper script on disk contains no secret.
+            // BatchMode must stay off here: it would disable askpass along with the prompt.
+            psi.Environment["SSH_ASKPASS"] = EnsureAskPassScript();
+            psi.Environment["SSH_ASKPASS_REQUIRE"] = "force";   // OpenSSH 8.4+; ignores the missing DISPLAY
+            psi.Environment["DISPLAY"] = ":0";                   // older OpenSSH still requires DISPLAY to be set
+            psi.Environment[AskPassEnvVar] = config.RepoSshPassphrase;
+        }
+        else
+        {
+            // No passphrase configured: fail fast with a readable error instead of blocking on a prompt.
+            sshOptions.Add("-o BatchMode=yes");
+        }
+
+        if (sshOptions.Count > 0)
+            psi.Environment["GIT_SSH_COMMAND"] = "ssh " + string.Join(' ', sshOptions);
 
         log.LogInformation("$ {File} {Args}", file, string.Join(' ', args));
         using var proc = Process.Start(psi)
@@ -90,7 +113,7 @@ public sealed class GitService(BotConfig config, ILogger<GitService> log)
         if (proc.ExitCode != 0)
         {
             var msg = $"git {string.Join(' ', args)} failed (exit {proc.ExitCode}).\nstdout:\n{stdout}\nstderr:\n{stderr}";
-            throw new InvalidOperationException(msg);
+            throw new InvalidOperationException(msg + AuthHint(stderr));
         }
 
         return (stdout, stderr);
@@ -149,5 +172,46 @@ public sealed class GitService(BotConfig config, ILogger<GitService> log)
         Run("git", new[] { "push", config.RepoRemoteName, $"HEAD:{config.RepoBranch}" });
         log.LogInformation("Pushed {Paths} to {Remote}/{Branch}: {Message}",
             string.Join(", ", relativePaths), config.RepoRemoteName, config.RepoBranch, message);
+    }
+    private const string AskPassEnvVar = "BUILDCHATBOT_SSH_PASSPHRASE";
+
+    /// <summary>
+    /// Writes (once) the tiny helper that OpenSSH calls to obtain the key passphrase. The script
+    /// only echoes an environment variable, so the passphrase is never stored on disk.
+    /// </summary>
+    private string EnsureAskPassScript()
+    {
+        Directory.CreateDirectory(config.TempDirBase);
+        var path = Path.GetFullPath(Path.Combine(config.TempDirBase, "ssh-askpass.sh"));
+        var body = $"#!/bin/sh\nprintf '%s\\n' \"${AskPassEnvVar}\"\n";
+
+        if (!File.Exists(path) || File.ReadAllText(path) != body)
+            File.WriteAllText(path, body);
+
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        return path;
+    }
+
+    /// <summary>Turns the common SSH authentication failures into an actionable next step.</summary>
+    private string AuthHint(string stderr)
+    {
+        if (stderr.Contains("passphrase", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Permission denied (publickey)", StringComparison.OrdinalIgnoreCase))
+        {
+            return "\n\nHint: the SSH key needs a passphrase but the bot has no terminal. Either\n"
+                 + "  a) add the key to the agent once:  ssh-add --apple-use-keychain "
+                 + $"{config.RepoSshKeyPath ?? "<key>"}\n"
+                 + "  b) or set REPO_SSH_PASSPHRASE in env.local, or\n"
+                 + "  c) or remove the passphrase:  ssh-keygen -p -N \"\" -f "
+                 + $"{config.RepoSshKeyPath ?? "<key>"}";
+        }
+
+        if (stderr.Contains("Host key verification failed", StringComparison.OrdinalIgnoreCase))
+            return "\n\nHint: the remote's host key is not known yet. Connect once by hand on the "
+                 + "build host to accept it, e.g. `ssh -T git@github.com`.";
+
+        return "";
     }
 }

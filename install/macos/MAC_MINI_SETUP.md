@@ -117,15 +117,69 @@ API → Team Keys → Generate, role **App Manager**. The `.p8` can be downloade
 ## 8. Git SSH key with push rights
 
 After a successful release build the bot commits and pushes the `pubspec.yaml` version
-bump, so a read-only deploy key is not enough.
+bump, so a read-only deploy key is not enough. Give the key write access on the repo.
+
+Check that it works, using the host the clone actually uses:
 
 ```bash
-ssh -T git@github.com          # must succeed
+git -C "$REPO_PATH" remote -v      # note the host part, e.g. github.com or github.com-live
+ssh -T git@github.com              # must print "Hi <org>/<repo>! You've successfully authenticated"
 cd "$REPO_PATH" && git push --dry-run
 ```
 
-Give the key write access on the repo, and point `REPO_SSH_KEY_PATH` at it in `env.local`
-if it is not the default `~/.ssh/id_ed25519`.
+### If the remote uses a host alias
+
+A remote like `git@github.com-live:Org/repo.git` is an alias defined in `~/.ssh/config`:
+
+```
+Host github.com-live
+    HostName github.com
+    User git
+    IdentityFile /Users/admin/live
+    IdentitiesOnly yes
+```
+
+In that case **leave `REPO_SSH_KEY_PATH` empty** in `env.local`. The SSH config already
+picks the right key, and setting `REPO_SSH_KEY_PATH` overrides it with `-i`, which can
+select the wrong key. Only set it when there is no config entry for the host.
+
+### If the key has a passphrase
+
+This is the common trap. The bot has no terminal, so it can never type a passphrase. Git
+would stop and wait forever, so the bot now fails fast instead. Pick one fix:
+
+**A. Store the passphrase in the login keychain (no secret in any file).** Add
+`AddKeysToAgent yes` and `UseKeychain yes` to the `Host` block above, then run once:
+
+```bash
+ssh-add --apple-use-keychain /Users/admin/live
+```
+
+The agent then opens the key by itself after every reboot. This needs the login keychain
+to stay unlocked — see step 5.
+
+**B. Put the passphrase in `env.local`** (the file is `chmod 600`):
+
+```
+REPO_SSH_PASSPHRASE=your-passphrase
+```
+
+The bot feeds it to SSH through `SSH_ASKPASS`. The passphrase is never written to disk.
+This works even if the keychain or the agent is not available, so it is the more reliable
+option on a headless machine.
+
+**C. Remove the passphrase from the key:**
+
+```bash
+ssh-keygen -p -N "" -f /Users/admin/live
+```
+
+To check whether a key has a passphrase at all:
+
+```bash
+ssh-keygen -y -P "" -f /Users/admin/live >/dev/null 2>&1 \
+  && echo "no passphrase" || echo "has a passphrase"
+```
 
 ## 9. Install the LaunchAgent
 
