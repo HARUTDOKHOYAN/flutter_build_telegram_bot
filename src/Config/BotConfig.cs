@@ -48,6 +48,30 @@ public sealed class BotConfig
     public string LogDir { get; set; } = "./logs";
     public string BuildRecordPath { get; set; } = "./logs/builds.jsonl";
 
+    // Release pipeline (tool/release.sh inside the Flutter repo)
+    /// <summary>Path of the release script, relative to <see cref="RepoPath"/> unless absolute.</summary>
+    public string ReleaseScriptPath { get; set; } = "tool/release.sh";
+    /// <summary>Seconds the bot waits for the user to answer a version/build-number prompt before cancelling.</summary>
+    public int ReleasePromptTimeoutSeconds { get; set; } = 300;
+    /// <summary>Commit + push pubspec.yaml after a successful release build (the pubspec is the release log).</summary>
+    public bool ReleaseCommitVersionBump { get; set; } = true;
+    public string ReleaseGitAuthorName { get; set; } = "BuildChatBot";
+    public string ReleaseGitAuthorEmail { get; set; } = "buildbot@local";
+
+    // Apple / App Store Connect (only needed for /release_ios_* commands; validated lazily)
+    public string? AppleApiKeyId { get; set; }
+    public string? AppleApiIssuerId { get; set; }
+    /// <summary>Absolute path to the AuthKey_XXXX.p8 private key downloaded from App Store Connect.</summary>
+    public string? AppleApiKeyPath { get; set; }
+    /// <summary>Bundle identifier of the iOS app, e.g. com.airexys.app. Used to resolve the App Store Connect app id.</summary>
+    public string? AppleBundleId { get; set; }
+    /// <summary>Seconds to wait for App Store Connect to finish processing an uploaded build.</summary>
+    public int AppleProcessingTimeoutSeconds { get; set; } = 2400;
+    /// <summary>Seconds between App Store Connect processing polls.</summary>
+    public int AppleProcessingPollSeconds { get; set; } = 30;
+    /// <summary>When true, mark processed builds as "does not use non-exempt encryption" so TestFlight doesn't stall on Missing Compliance.</summary>
+    public bool AppleSetExportComplianceExempt { get; set; } = true;
+
     /// <summary>
     /// Build a <see cref="BotConfig"/>. Precedence (highest wins):
     ///   1. Environment variables (env.local is loaded into process env at startup).
@@ -101,6 +125,22 @@ public sealed class BotConfig
         cfg.LogDir = Env("LOG_DIR", cfg.LogDir);
         cfg.BuildRecordPath = Env("BUILD_RECORD_PATH", cfg.BuildRecordPath);
 
+        // Release pipeline
+        cfg.ReleaseScriptPath = Env("RELEASE_SCRIPT_PATH", cfg.ReleaseScriptPath);
+        cfg.ReleasePromptTimeoutSeconds = EnvInt("RELEASE_PROMPT_TIMEOUT_SECONDS", cfg.ReleasePromptTimeoutSeconds);
+        cfg.ReleaseCommitVersionBump = EnvBool("RELEASE_COMMIT_VERSION_BUMP", cfg.ReleaseCommitVersionBump);
+        cfg.ReleaseGitAuthorName = Env("RELEASE_GIT_AUTHOR_NAME", cfg.ReleaseGitAuthorName);
+        cfg.ReleaseGitAuthorEmail = Env("RELEASE_GIT_AUTHOR_EMAIL", cfg.ReleaseGitAuthorEmail);
+
+        // Apple / App Store Connect
+        cfg.AppleApiKeyId = EnvOrNull("APPLE_API_KEY_ID", cfg.AppleApiKeyId);
+        cfg.AppleApiIssuerId = EnvOrNull("APPLE_API_ISSUER_ID", cfg.AppleApiIssuerId);
+        cfg.AppleApiKeyPath = EnvOrNull("APPLE_API_KEY_PATH", cfg.AppleApiKeyPath);
+        cfg.AppleBundleId = EnvOrNull("APPLE_BUNDLE_ID", cfg.AppleBundleId);
+        cfg.AppleProcessingTimeoutSeconds = EnvInt("APPLE_PROCESSING_TIMEOUT_SECONDS", cfg.AppleProcessingTimeoutSeconds);
+        cfg.AppleProcessingPollSeconds = EnvInt("APPLE_PROCESSING_POLL_SECONDS", cfg.AppleProcessingPollSeconds);
+        cfg.AppleSetExportComplianceExempt = EnvBool("APPLE_SET_EXPORT_COMPLIANCE_EXEMPT", cfg.AppleSetExportComplianceExempt);
+
         return cfg;
     }
 
@@ -116,9 +156,38 @@ public sealed class BotConfig
         if (HeartbeatSeconds < 5) errors.Add("HEARTBEAT_SECONDS must be >= 5.");
         if (QueueCapacity < 1) errors.Add("QUEUE_CAPACITY must be >= 1.");
 
+        if (ReleasePromptTimeoutSeconds < 30) errors.Add("RELEASE_PROMPT_TIMEOUT_SECONDS must be >= 30.");
+        if (AppleProcessingPollSeconds < 5) errors.Add("APPLE_PROCESSING_POLL_SECONDS must be >= 5.");
+
         if (errors.Count > 0)
             throw new InvalidOperationException("Invalid configuration:\n - " + string.Join("\n - ", errors));
     }
+
+    /// <summary>True when every key needed to talk to App Store Connect is present.</summary>
+    public bool AppleConfigured =>
+        !string.IsNullOrWhiteSpace(AppleApiKeyId)
+        && !string.IsNullOrWhiteSpace(AppleApiIssuerId)
+        && !string.IsNullOrWhiteSpace(AppleApiKeyPath)
+        && !string.IsNullOrWhiteSpace(AppleBundleId);
+
+    /// <summary>
+    /// Human-readable list of the Apple keys that are missing. Empty when <see cref="AppleConfigured"/>.
+    /// Used by the release commands to tell the user exactly what to add to env.local.
+    /// </summary>
+    public IReadOnlyList<string> MissingAppleKeys()
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(AppleApiKeyId)) missing.Add("APPLE_API_KEY_ID");
+        if (string.IsNullOrWhiteSpace(AppleApiIssuerId)) missing.Add("APPLE_API_ISSUER_ID");
+        if (string.IsNullOrWhiteSpace(AppleApiKeyPath)) missing.Add("APPLE_API_KEY_PATH");
+        else if (!File.Exists(AppleApiKeyPath)) missing.Add($"APPLE_API_KEY_PATH (file not found: {AppleApiKeyPath})");
+        if (string.IsNullOrWhiteSpace(AppleBundleId)) missing.Add("APPLE_BUNDLE_ID");
+        return missing;
+    }
+
+    /// <summary>Absolute path of the release script.</summary>
+    public string ResolvedReleaseScriptPath =>
+        Path.IsPathRooted(ReleaseScriptPath) ? ReleaseScriptPath : Path.Combine(RepoPath, ReleaseScriptPath);
 
     private static string Env(string key, string fallback)
     {

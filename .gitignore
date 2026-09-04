@@ -22,6 +22,8 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+# The patterns above would also hide src/Release/ (bot source, not build output).
+!src/Release/
 
 # .NET Core
 project.lock.json
@@ -38,6 +40,7 @@ ScaffoldingReadMe.txt
 
 # dotenv environment variables file
 .env
+.env.local
 
 # Others
 ~$*

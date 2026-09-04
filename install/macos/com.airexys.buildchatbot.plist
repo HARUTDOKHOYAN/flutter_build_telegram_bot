@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd LaunchAgent template for BuildChatBot.
+
+  It must be a LaunchAgent (~/Library/LaunchAgents), NOT a LaunchDaemon:
+  iOS code signing reads certificates and private keys from the *login* keychain
+  of the logged-in user. A LaunchDaemon runs outside that login session and every
+  archive/export fails with "errSecInternalComponent" / "No signing certificate".
+
+  Fill the placeholders, then install it:
+
+    mkdir -p ~/Library/LaunchAgents
+    sed -e "s|__BOT_DIR__|$HOME/Desktop/AirCaseProject/Tools/flutter_build_telegram_bot|g" \
+        -e "s|__HOME__|$HOME|g" \
+        install/macos/com.airexys.buildchatbot.plist \
+        > ~/Library/LaunchAgents/com.airexys.buildchatbot.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.airexys.buildchatbot.plist
+
+  Placeholders:
+    __BOT_DIR__  absolute path of this bot repo (the folder holding src/ and env.local)
+    __HOME__     home folder of the build user, e.g. /Users/builder
+
+  Also check FLUTTER_BIN_DIR in the PATH below: it must point at the folder that
+  contains the `flutter` binary on this Mac (`dirname "$(which flutter)"`).
+  Full instructions: install/macos/MAC_MINI_SETUP.md
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airexys.buildchatbot</string>
+
+    <!-- Absolute path to dotnet: launchd does not use your shell PATH to find it.
+         Check with `which dotnet` (Homebrew's dotnet-sdk cask installs
+         /usr/local/share/dotnet/dotnet). -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/share/dotnet/dotnet</string>
+        <string>__BOT_DIR__/src/bin/Release/net8.0/BuildChatBot.dll</string>
+    </array>
+
+    <!-- Runtime state (logs/, cache/apks/, tmp/) is created relative to this folder,
+         and env.local is found by walking up from it. -->
+    <key>WorkingDirectory</key>
+    <string>__BOT_DIR__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- Do not restart faster than once every 10 s if the bot crash-loops. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__BOT_DIR__/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__BOT_DIR__/logs/launchd.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd gives a minimal PATH; git, flutter, dotnet, pod and xcrun must all
+             be reachable. Replace __HOME__/development/flutter/bin with the real
+             Flutter bin dir on this machine (see the note above). -->
+        <key>PATH</key>
+        <string>__HOME__/development/flutter/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <!-- Optional: uncomment if dotnet is installed somewhere non-standard.
+        <key>DOTNET_ROOT</key>
+        <string>/usr/local/share/dotnet</string>
+        -->
+    </dict>
+</dict>
+</plist>

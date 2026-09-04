@@ -2,6 +2,7 @@ using BuildChatBot.Config;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Telegram.Bot;
+using Telegram.Bot.Types.ReplyMarkups;
 using TgFile = Telegram.Bot.Types.InputFile;
 
 namespace BuildChatBot.Telegram;
@@ -34,6 +35,42 @@ public sealed class HybridTelegramSender : ITelegramSender, IAsyncDisposable
     {
         var msg = await _botClient.SendMessage(chatId, text, cancellationToken: ct).ConfigureAwait(false);
         return msg.MessageId;
+    }
+
+    public async Task<int> SendTextAsync(long chatId, string text,
+        IReadOnlyList<IReadOnlyList<(string Label, string Data)>>? buttons, CancellationToken ct)
+    {
+        var msg = await _botClient.SendMessage(
+            chatId: chatId,
+            text: text,
+            replyMarkup: ToMarkup(buttons),
+            cancellationToken: ct).ConfigureAwait(false);
+        return msg.MessageId;
+    }
+
+    public async Task RemoveKeyboardAsync(long chatId, int messageId, CancellationToken ct)
+    {
+        try
+        {
+            await _botClient.EditMessageReplyMarkup(
+                chatId: chatId,
+                messageId: messageId,
+                replyMarkup: null,
+                cancellationToken: ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // The message may already have no keyboard, or be too old to edit; non-fatal.
+            _log.LogDebug(ex, "EditMessageReplyMarkup failed (chatId={Chat}, msgId={Msg})", chatId, messageId);
+        }
+    }
+
+    private static InlineKeyboardMarkup? ToMarkup(
+        IReadOnlyList<IReadOnlyList<(string Label, string Data)>>? buttons)
+    {
+        if (buttons is null || buttons.Count == 0) return null;
+        return new InlineKeyboardMarkup(
+            buttons.Select(row => row.Select(b => InlineKeyboardButton.WithCallbackData(b.Label, b.Data))));
     }
 
     public async Task EditTextAsync(long chatId, int messageId, string text, CancellationToken ct)

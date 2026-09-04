@@ -59,7 +59,8 @@ public sealed class GitService(BotConfig config, ILogger<GitService> log)
         return repo.Head.Tip?.Sha ?? throw new InvalidOperationException("Repository has no HEAD commit.");
     }
 
-    private void Run(string file, IEnumerable<string> args)
+    /// <summary>Runs <paramref name="file"/> in the repo and returns its captured output.</summary>
+    private (string Stdout, string Stderr) Run(string file, IEnumerable<string> args)
     {
         var psi = new ProcessStartInfo
         {
@@ -91,5 +92,62 @@ public sealed class GitService(BotConfig config, ILogger<GitService> log)
             var msg = $"git {string.Join(' ', args)} failed (exit {proc.ExitCode}).\nstdout:\n{stdout}\nstderr:\n{stderr}";
             throw new InvalidOperationException(msg);
         }
+
+        return (stdout, stderr);
+    }
+
+    /// <summary>True when <paramref name="relativePath"/> has uncommitted (staged or unstaged) changes.</summary>
+    public bool HasLocalChanges(string relativePath)
+    {
+        var (stdout, _) = Run("git", new[] { "status", "--porcelain", "--", relativePath });
+        return !string.IsNullOrWhiteSpace(stdout);
+    }
+
+    /// <summary>
+    /// Restores the given paths from HEAD (<c>git checkout -- &lt;paths&gt;</c>). Used to revert the
+    /// release script's pubspec.yaml bump when the build that it described never completed.
+    /// </summary>
+    public void DiscardChanges(params string[] relativePaths)
+    {
+        if (relativePaths.Length == 0) return;
+
+        var args = new List<string> { "checkout", "--" };
+        args.AddRange(relativePaths);
+        Run("git", args);
+        log.LogInformation("git checkout -- {Paths} (local changes discarded)", string.Join(", ", relativePaths));
+    }
+
+    /// <summary>
+    /// Stages, commits and pushes the given paths to <c>REPO_REMOTE_NAME</c>/<c>REPO_BRANCH</c> using the
+    /// configured release author. No-ops when none of the paths changed. Throws
+    /// <see cref="InvalidOperationException"/> with the git output when any step fails.
+    /// </summary>
+    public void CommitAndPush(IReadOnlyList<string> relativePaths, string message)
+    {
+        if (relativePaths.Count == 0) return;
+
+        var addArgs = new List<string> { "add", "--" };
+        addArgs.AddRange(relativePaths);
+        Run("git", addArgs);
+
+        if (!relativePaths.Any(HasLocalChanges))
+        {
+            log.LogInformation("Nothing to commit for {Paths} — skipping commit + push.",
+                string.Join(", ", relativePaths));
+            return;
+        }
+
+        var commitArgs = new List<string>
+        {
+            "-c", $"user.name={config.ReleaseGitAuthorName}",
+            "-c", $"user.email={config.ReleaseGitAuthorEmail}",
+            "commit", "-m", message, "--",
+        };
+        commitArgs.AddRange(relativePaths);
+        Run("git", commitArgs);
+
+        Run("git", new[] { "push", config.RepoRemoteName, $"HEAD:{config.RepoBranch}" });
+        log.LogInformation("Pushed {Paths} to {Remote}/{Branch}: {Message}",
+            string.Join(", ", relativePaths), config.RepoRemoteName, config.RepoBranch, message);
     }
 }

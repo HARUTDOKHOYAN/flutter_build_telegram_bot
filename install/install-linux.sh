@@ -198,5 +198,5 @@ step "Done"
 cat <<EOF
   Run the bot:
     cd "$PROJECT_ROOT"
-    dotnet run --project src/BuildChatBot
+    dotnet run --project src/BuildChatBot.csproj
 EOF

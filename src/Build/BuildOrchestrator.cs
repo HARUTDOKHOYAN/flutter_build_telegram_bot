@@ -190,6 +190,7 @@ public sealed class BuildOrchestrator(
             try
             {
                 logStore.Append(new BuildRecord(
+                    Kind: "test_apk",
                     BuildId: buildId,
                     StartedAt: startedAt,
                     FinishedAt: DateTimeOffset.Now,

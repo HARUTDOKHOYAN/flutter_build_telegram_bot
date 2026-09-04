@@ -239,7 +239,12 @@ Write-Host @"
 
   Run the bot:
     cd $projectRoot
-    dotnet run --project src\BuildChatBot
+    dotnet run --project src\BuildChatBot.csproj
 
   Config: $envFile
+
+  Note: /test_build_android works here. The iOS release commands
+  (/release_ios_testflight, /release_ios_appstore) need macOS, Xcode and xcrun,
+  so they cannot work on Windows — run the bot on a Mac for those; see
+  install/macos/MAC_MINI_SETUP.md.
 "@

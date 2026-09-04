@@ -1,6 +1,8 @@
+using BuildChatBot.Apple;
 using BuildChatBot.Build;
 using BuildChatBot.Config;
 using BuildChatBot.Persistence;
+using BuildChatBot.Release;
 using BuildChatBot.Telegram;
 using DotNetEnv;
 using Microsoft.Extensions.Configuration;
@@ -61,6 +63,13 @@ public static class Program
                 services.AddSingleton<GradleCleaner>();
                 services.AddSingleton<BuildLogStore>();
                 services.AddSingleton<BuildOrchestrator>();
+
+                // iOS release pipeline (tool/release.sh -> altool -> App Store Connect).
+                services.AddSingleton<IReleaseScriptRunner, ReleaseScriptRunner>();
+                services.AddSingleton<IIpaUploader, AltoolIpaUploader>();
+                services.AddSingleton<IAppStoreConnectClient, AppStoreConnectClient>();
+                services.AddSingleton<ReleaseConversation>();
+                services.AddSingleton<ReleaseOrchestrator>();
                 services.AddSingleton<UpdateRouter>();
                 services.AddSingleton<BotCommandRegistrar>();
                 services.AddHostedService<TelegramPollingService>();

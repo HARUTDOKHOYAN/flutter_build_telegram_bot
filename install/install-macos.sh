@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # BuildChatBot installer for macOS.
 # Installs .NET 8, OpenJDK 17, Git, Flutter, Android command-line tools via Homebrew,
-# then optionally sets up an SSH key, optionally clones a Git project,
-# then runs the env.local wizard and builds the bot.
+# checks the optional iOS toolchain (Xcode, CocoaPods, signing identity) used by the
+# /release_ios_* commands, then optionally sets up an SSH key, optionally clones a Git
+# project, then runs the env.local wizard and builds the bot.
 set -euo pipefail
 
 NON_INTERACTIVE=0
@@ -117,12 +118,46 @@ else
         warn "sdkmanager unavailable — install Android Studio manually, then re-run with --skip-deps."
     fi
 
-    # ─── Step 5: flutter doctor ──────────────────────────────────────
+    # ─── Step 5: iOS toolchain (optional) ────────────────────────────
+    # Needed only for /release_ios_testflight and /release_ios_appstore. Everything
+    # here warns instead of failing, so an Android-only machine still installs fine.
+    step "iOS toolchain (optional — needed for /release_ios_*)"
+    XCODE_PATH="$(xcode-select -p 2>/dev/null || true)"
+    if [[ -z "$XCODE_PATH" || "$XCODE_PATH" == */CommandLineTools ]]; then
+        warn "Full Xcode not selected (xcode-select -p = ${XCODE_PATH:-<none>})."
+        cat <<'EOF'
+    iOS release builds need the full Xcode, not just the Command Line Tools:
+      1. Install Xcode from the App Store (or developer.apple.com/download).
+      2. sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      3. sudo xcodebuild -license accept
+      4. sudo xcodebuild -runFirstLaunch
+    Then re-run this installer with --skip-deps, or just continue for Android-only use.
+EOF
+    else
+        ok "xcode-select: $XCODE_PATH"
+        if XCODEBUILD_VER="$(xcodebuild -version 2>/dev/null | head -n1)"; then
+            ok "xcodebuild: $XCODEBUILD_VER"
+        else
+            warn "xcodebuild failed — run: sudo xcodebuild -license accept && sudo xcodebuild -runFirstLaunch"
+        fi
+    fi
+
+    brew install --quiet cocoapods || true
+    ok "cocoapods: $(pod --version 2>/dev/null || echo 'not found')"
+
+    if security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distribution"; then
+        ok "An 'Apple Distribution' signing identity is in the keychain."
+    else
+        warn "No 'Apple Distribution' identity in the login keychain — import the .p12 (double-click it) or sign in via Xcode → Settings → Accounts → Manage Certificates."
+    fi
+    echo "    Headless build server? See install/macos/MAC_MINI_SETUP.md"
+
+    # ─── Step 6: flutter doctor ──────────────────────────────────────
     step "flutter doctor"
     flutter doctor || true
 fi
 
-# ─── Step 6: optional Git/SSH setup ──────────────────────────────────
+# ─── Step 7: optional Git/SSH setup ──────────────────────────────────
 step "Git / SSH setup (optional)"
 if prompt_yn "Set up a Git SSH key now? [y/N]" "N"; then
     if [[ "$NON_INTERACTIVE" == "1" ]]; then
@@ -150,7 +185,7 @@ if prompt_yn "Set up a Git SSH key now? [y/N]" "N"; then
     [[ "$NON_INTERACTIVE" == "1" ]] || read -r _ </dev/tty || true
 fi
 
-# ─── Step 7: optional clone of a Git project ────────────────────────
+# ─── Step 8: optional clone of a Git project ────────────────────────
 step "Clone Git project (optional)"
 if prompt_yn "Clone a Flutter project into a new folder now? [y/N]" "N"; then
     read -r -p "  Repo URL (e.g. git@github.com:org/repo.git): " REPO_URL </dev/tty || REPO_URL=""
@@ -176,7 +211,7 @@ if prompt_yn "Clone a Flutter project into a new folder now? [y/N]" "N"; then
     fi
 fi
 
-# ─── Step 8: env.local wizard ───────────────────────────────────────
+# ─── Step 9: env.local wizard ───────────────────────────────────────
 step "env.local wizard"
 export ENV_FILE EXAMPLE_FILE NON_INTERACTIVE FORCE
 export DEFAULT_JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 17 2>/dev/null || echo /opt/homebrew/opt/openjdk@17)}"
@@ -189,7 +224,7 @@ fi
 # shellcheck source=common/env-wizard.sh
 source "$HERE/common/env-wizard.sh"
 
-# ─── Step 9: dotnet restore + build ─────────────────────────────────
+# ─── Step 10: dotnet restore + build ─────────────────────────────────
 step "dotnet restore + build"
 if command -v dotnet >/dev/null 2>&1; then
     (cd "$PROJECT_ROOT" && dotnet restore && dotnet build -c Release)
@@ -198,16 +233,20 @@ else
     warn "dotnet CLI not found — re-run after .NET installs, or use --skip-deps."
 fi
 
-# ─── Step 10: summary ───────────────────────────────────────────────
+# ─── Step 11: summary ───────────────────────────────────────────────
 step "Done"
 cat <<EOF
 
   Run the bot with:
     cd "$PROJECT_ROOT"
-    dotnet run --project src/BuildChatBot
+    dotnet run --project src/BuildChatBot.csproj
 
   Config: $ENV_FILE
   Logs:   $PROJECT_ROOT/logs/
 
   Don't forget to fill TELEGRAM_BOT_TOKEN / TELEGRAM_API_ID / TELEGRAM_API_HASH if left blank.
+
+  For iOS releases (/release_ios_testflight, /release_ios_appstore) you also need the
+  APPLE_* keys in env.local — see install/common/env.local.example.
+  Setting up a headless Mac mini as the build server: install/macos/MAC_MINI_SETUP.md
 EOF
