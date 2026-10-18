@@ -23,6 +23,10 @@
 
   Also check FLUTTER_BIN_DIR in the PATH below: it must point at the folder that
   contains the `flutter` binary on this Mac (`dirname "$(which flutter)"`).
+  Since 2026-10-18 the bot also completes PATH itself for every build (Homebrew,
+  ~/development/flutter/bin, rbenv shims, gem bin folders) and sets LANG/LC_ALL to
+  en_US.UTF-8 when missing (CocoaPods needs it). Anything else goes in env.local as
+  EXTRA_PATH, and every logs/release-*.log now starts with a toolchain check.
   Full instructions: install/macos/MAC_MINI_SETUP.md
 -->
 <plist version="1.0">

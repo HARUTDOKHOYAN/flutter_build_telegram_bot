@@ -57,6 +57,7 @@ public sealed class GradleCleaner(BotConfig config, ILogger<GradleCleaner> log)
         };
         psi.ArgumentList.Add("clean");
         psi.ArgumentList.Add("--no-daemon");
+        ToolEnvironment.Apply(psi, config);
 
         try
         {

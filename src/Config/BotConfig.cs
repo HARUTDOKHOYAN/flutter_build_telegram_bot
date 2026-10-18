@@ -35,6 +35,13 @@ public sealed class BotConfig
     public string? AndroidSdkRoot { get; set; }
     public string? ApksignerPath { get; set; }
 
+    /// <summary>
+    /// Folders prepended to PATH for every build child (release.sh, flutter, gradlew), separated
+    /// by ':' (';' on Windows); '~/' is expanded. For tools the launchd PATH cannot find, e.g. a
+    /// gem-installed `pod` or an fvm Flutter. Blank: only the auto-detected folders are added.
+    /// </summary>
+    public string? ExtraPath { get; set; }
+
     // Artifact paths
     public string ApkOutputRelative { get; set; } = "build/app/outputs/flutter-apk/app-release.apk";
     public string ApkCacheDir { get; set; } = "./cache/apks";
@@ -110,6 +117,7 @@ public sealed class BotConfig
         cfg.JavaHome = EnvOrNull("JAVA_HOME", cfg.JavaHome);
         cfg.AndroidSdkRoot = EnvOrNull("ANDROID_SDK_ROOT", cfg.AndroidSdkRoot);
         cfg.ApksignerPath = EnvOrNull("APKSIGNER_PATH", cfg.ApksignerPath);
+        cfg.ExtraPath = EnvOrNull("EXTRA_PATH", cfg.ExtraPath);
 
         // Artifact paths
         cfg.ApkOutputRelative = Env("APK_OUTPUT_RELATIVE", cfg.ApkOutputRelative);

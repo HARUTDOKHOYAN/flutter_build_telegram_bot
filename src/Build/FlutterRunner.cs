@@ -70,13 +70,7 @@ public sealed class FlutterRunner(BotConfig config, ILogger<FlutterRunner> log)
 
         foreach (var a in args) psi.ArgumentList.Add(a);
 
-        if (!string.IsNullOrWhiteSpace(config.JavaHome))
-            psi.Environment["JAVA_HOME"] = config.JavaHome;
-        if (!string.IsNullOrWhiteSpace(config.AndroidSdkRoot))
-        {
-            psi.Environment["ANDROID_SDK_ROOT"] = config.AndroidSdkRoot;
-            psi.Environment["ANDROID_HOME"] = config.AndroidSdkRoot;
-        }
+        ToolEnvironment.Apply(psi, config);
 
         var sw = Stopwatch.StartNew();
         log.LogInformation("$ {Bin} {Args}", psi.FileName, string.Join(' ', args));

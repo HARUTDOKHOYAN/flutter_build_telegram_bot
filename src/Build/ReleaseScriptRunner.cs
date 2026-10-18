@@ -111,6 +111,7 @@ public sealed class ReleaseScriptRunner(BotConfig config, ILogger<ReleaseScriptR
 
         await using var logStream = new StreamWriter(logFile, append: false, Encoding.UTF8) { AutoFlush = true };
         await logStream.WriteLineAsync($"$ {commandLine}").ConfigureAwait(false);
+        await WriteToolchainAsync(logStream, ct).ConfigureAwait(false);
 
         var gate = new SemaphoreSlim(1, 1);
         var sw = Stopwatch.StartNew();
@@ -259,53 +260,65 @@ public sealed class ReleaseScriptRunner(BotConfig config, ILogger<ReleaseScriptR
         return args;
     }
 
+    /// <summary>
+    /// Writes what the script will actually see — PATH, locale, and where/which flutter, pod,
+    /// ruby and xcodebuild resolve to — at the top of the release log, under the same
+    /// environment the script gets. Added 2026-10-18 after a server-Mac run printed
+    /// <c>ok flutter: </c> with no version and nothing else to go on. Never fails the release:
+    /// a probe that errors or hangs past 90 s is noted and the script runs anyway.
+    /// </summary>
+    private async Task WriteToolchainAsync(StreamWriter logStream, CancellationToken ct)
+    {
+        const string probe =
+            "echo \"PATH=$PATH\"; echo \"LANG=$LANG LC_ALL=$LC_ALL HOME=$HOME\"; " +
+            "for t in flutter pod ruby xcodebuild git; do printf '%-11s %s\\n' \"$t\" \"$(command -v $t || echo MISSING)\"; done; " +
+            "echo '--- flutter --version'; flutter --version 2>&1 | head -4; " +
+            "echo '--- pod --version'; pod --version 2>&1 | head -2";
+        var psi = new ProcessStartInfo
+        {
+            FileName = "bash",
+            WorkingDirectory = config.RepoPath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(probe);
+        ApplyEnvironment(psi);
+
+        await logStream.WriteLineAsync("# ---- toolchain (as release.sh sees it) ----").ConfigureAwait(false);
+        try
+        {
+            using var proc = Process.Start(psi)!;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(90));
+            var stdout = proc.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = proc.StandardError.ReadToEndAsync(timeout.Token);
+            await proc.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            var text = (await stdout.ConfigureAwait(false)) + (await stderr.ConfigureAwait(false));
+            await logStream.WriteLineAsync(text.TrimEnd()).ConfigureAwait(false);
+            log.LogInformation("Release toolchain:\n{Toolchain}", text.TrimEnd());
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            await logStream.WriteLineAsync("# toolchain probe timed out after 90 s (flutter may be hung on first run)").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            await logStream.WriteLineAsync($"# toolchain probe failed: {ex.Message}").ConfigureAwait(false);
+        }
+        await logStream.WriteLineAsync("# -------------------------------------------").ConfigureAwait(false);
+    }
+
     private void ApplyEnvironment(ProcessStartInfo psi)
     {
-        if (!string.IsNullOrWhiteSpace(config.JavaHome))
-            psi.Environment["JAVA_HOME"] = config.JavaHome;
-        if (!string.IsNullOrWhiteSpace(config.AndroidSdkRoot))
-        {
-            psi.Environment["ANDROID_SDK_ROOT"] = config.AndroidSdkRoot;
-            psi.Environment["ANDROID_HOME"] = config.AndroidSdkRoot;
-        }
-
-        // The script calls `flutter` (and curl / security / xcodebuild / shasum) by name.
-        psi.Environment["PATH"] = BuildPath(psi.Environment.TryGetValue("PATH", out var p) ? p : null);
+        // PATH, UTF-8 locale, HOME and the Android toolchain: shared with the other runners.
+        ToolEnvironment.Apply(psi, config);
 
         // The script hard-codes ANSI escapes, but keep well-behaved children plain too.
         psi.Environment["TERM"] = "dumb";
         psi.Environment["NO_COLOR"] = "1";
-    }
-
-    private string BuildPath(string? current)
-    {
-        var sep = Path.PathSeparator.ToString();
-        var parts = (current ?? "")
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-
-        void Ensure(string dir)
-        {
-            if (!string.IsNullOrWhiteSpace(dir) &&
-                !parts.Any(x => string.Equals(x, dir, StringComparison.Ordinal)))
-                parts.Add(dir);
-        }
-
-        if (Path.IsPathRooted(config.FlutterBin))
-        {
-            var flutterDir = Path.GetDirectoryName(config.FlutterBin);
-            if (!string.IsNullOrWhiteSpace(flutterDir)) Ensure(flutterDir!);
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            Ensure("/usr/bin");
-            Ensure("/bin");
-            Ensure("/usr/local/bin");
-            Ensure("/opt/homebrew/bin");
-        }
-
-        return string.Join(sep, parts);
     }
 
     private static string? FirstFile(string dir, string pattern)
