@@ -1,0 +1,52 @@
+# BuildChatBot in Docker: Android test builds only (/test_build_android).
+# The iOS release commands need macOS + Xcode and refuse to run in the container.
+#
+#   cp docker/compose.env.example .env     # host folders for the mounts below
+#   docker compose up -d --build
+#   docker compose logs -f bot
+#
+# Full guide: docker/README.md
+
+services:
+  bot:
+    build:
+      context: .
+      args:
+        FLUTTER_VERSION: ${FLUTTER_VERSION:-3.41.1}
+        BOT_UID: ${BOT_UID:-1000}
+        BOT_GID: ${BOT_GID:-1000}
+    image: buildchatbot:latest
+    # Android build tools exist for x86_64 Linux only (emulated on Apple Silicon).
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      # Optional: clone this repo into BOT_REPO_DIR on the first start when that folder is empty.
+      REPO_CLONE_URL: ${REPO_CLONE_URL:-}
+    volumes:
+      # The same env.local the bot uses on the host. Host paths in it are replaced at start.
+      - type: bind
+        source: ${BOT_ENV_LOCAL:-./env.local}
+        target: /config/env.local
+        read_only: true
+        bind:
+          create_host_path: false
+      # The Flutter repo. Use a separate clone for the bot, not the folder you work in.
+      - type: bind
+        source: ${BOT_REPO_DIR:?Set BOT_REPO_DIR in .env (see docker/compose.env.example)}
+        target: /repo
+        bind:
+          create_host_path: false
+      # SSH keys + config + known_hosts for git (copied in at start, never written to).
+      - ${BOT_SSH_DIR:-${HOME}/.ssh}:/ssh:ro
+      # Gitignored files copied over the repo at start (signing key, local.properties).
+      - ${BOT_REPO_OVERLAY_DIR:-./docker/overlay}:/repo-overlay:ro
+      # logs/, cache/apks/, tmp/, WTelegram session.
+      - bot-data:/data
+      # Build caches, so the second build does not download everything again.
+      - gradle-cache:/home/bot/.gradle
+      - pub-cache:/home/bot/.pub-cache
+
+volumes:
+  bot-data:
+  gradle-cache:
+  pub-cache:

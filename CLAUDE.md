@@ -67,9 +67,8 @@ When adding a config knob, touch all four places: property + `Env*()` line in `B
 the documented key in `install/common/env.local.example`, and (if required) the wizard in
 `install/common/env-wizard.sh` and `install/install-windows.ps1`.
 
-`env.local` contains real secrets. It is currently tracked by git despite its header comment
-saying it is gitignored (`.gitignore` lists `.env` but not `env.local`). Do not commit changes
-to it.
+`env.local` contains real secrets. It is gitignored; never commit it, and never let it into a
+Docker build context (`.dockerignore` is an allowlist for that reason).
 
 ## Architecture
 
@@ -145,6 +144,27 @@ files lazily create a `WTelegram.Bot` (MTProto, 2 GB limit) whose session is sto
 
 `BotCommandRegistrar.Commands` must be kept in sync with the `switch` in `UpdateRouter`
 when adding or renaming a command.
+
+## Docker
+
+`Dockerfile` + `docker-compose.yml` + `docker/` run the bot in a `linux/amd64` container for
+**Android test builds only** (the iOS commands already refuse on non-macOS in
+`ReleaseOrchestrator`). Guide: `docker/README.md`. How it fits the config model:
+
+- The host's `env.local` is mounted at `/config/env.local`. `docker/entrypoint.sh` writes
+  `/tmp/env.container` = that file + container overrides appended (`REPO_PATH=/repo`,
+  `FLUTTER_BIN`, `JAVA_HOME`, `ANDROID_SDK_ROOT`, `LOG_DIR=/data/logs`, …) and starts the bot
+  with `--env` on it. DotNetEnv applies lines in order, so the appended lines win and an empty
+  value unsets the key. No C# change was needed; keep the bot unaware of Docker.
+- A new config key that holds a **host path** must also get a container override in
+  `entrypoint.sh`, or the container will try to use the host path.
+- The entrypoint also copies `/ssh` → `~/.ssh` (mode 600, `IgnoreUnknown UseKeychain`),
+  clones `REPO_CLONE_URL` into an empty `/repo`, and copies `/repo-overlay` (gitignored files
+  like `android/key.properties` + keystore) over the repo. Host-side mount settings live in a
+  compose `.env` (`docker/compose.env.example`), not in `env.local`.
+- Runtime state is the `/data` volume (WORKDIR); Gradle and pub caches are their own volumes.
+- Toolchain versions are build args (`FLUTTER_VERSION`, `ANDROID_PLATFORM`, `ANDROID_NDK`, …);
+  keep `FLUTTER_VERSION` equal to the Flutter version the app repo uses.
 
 ## Conventions worth knowing
 

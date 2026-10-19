@@ -53,6 +53,8 @@ cache/
 src/cache/
 chatbot
 chatbot.pub
+# Docker: signing keys and other files copied over the repo (docker/compose.env.example)
+docker/overlay/
 
 # MSBuild Binary and Structured Log
 *.binlog

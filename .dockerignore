@@ -1,0 +1,10 @@
+# Only the bot source and the entrypoint go into the build context.
+# env.local, keys and runtime state must never end up in an image layer.
+*
+!src/
+!docker/entrypoint.sh
+src/bin/
+src/obj/
+src/cache/
+src/logs/
+**/.DS_Store

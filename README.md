@@ -28,6 +28,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 dotnet run --project src\BuildChatBot.csproj
 ```
 
+### Docker (Android builds only)
+```bash
+cp docker/compose.env.example .env   # set BOT_REPO_DIR to a separate clone of the Flutter repo
+docker compose up -d --build
+```
+The image brings .NET 8, JDK 17, Flutter and the Android SDK, and reads the same `env.local`
+(host paths in it are replaced at start). The iOS commands do not work in the container.
+Full guide: [`docker/README.md`](docker/README.md).
+
 The iOS release commands need macOS, Xcode and `xcrun`. For a dedicated headless build
 machine follow [`install/macos/MAC_MINI_SETUP.md`](install/macos/MAC_MINI_SETUP.md), which
 also covers running the bot as a launchd LaunchAgent.
@@ -186,6 +195,12 @@ chat — fix them in App Store Connect and run the command again.
 
 ```
 BuildChatBot/
+├── Dockerfile            # Android-only image: .NET 8 + JDK 17 + Flutter + Android SDK
+├── docker-compose.yml
+├── docker/
+│   ├── entrypoint.sh     # SSH copy, optional clone, overlay, container env file
+│   ├── compose.env.example
+│   └── README.md
 ├── install.sh            # dispatcher (macOS/Linux)
 ├── install.ps1           # dispatcher (Windows)
 ├── install/
