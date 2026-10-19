@@ -139,11 +139,14 @@ of them runs at a time.
 1. Acknowledge in chat and acquire the single-slot build semaphore (queue position reported if
    contended).
 2. `LibGit2Sharp` checks out and fast-forwards `REPO_BRANCH`.
-3. If the branch HEAD hadn't moved and a cached APK exists for that commit SHA, the bot
-   re-sends the cached file.
+3. If the branch HEAD hadn't moved and a cached APK exists for that commit SHA and the same build
+   recipe (args + define file), the bot re-sends the cached file.
 4. Otherwise: `flutter clean` → `flutter pub get` → `flutter build apk --release
-   --target-platform=<configured>` (plus `--flavor` / `-t` / `FLUTTER_EXTRA_ARGS`).
-5. `apksigner verify --verbose` confirms the APK is signed.
+   --target-platform=<configured> --dart-define-from-file=release.env` (plus `--flavor` / `-t` /
+   `FLUTTER_EXTRA_ARGS`). A missing `FLUTTER_DART_DEFINE_FILE` stops the build: without it the
+   release app closes at launch.
+5. `apksigner verify --verbose --print-certs` confirms the APK is signed; a debug-key signature
+   (no `android/key.properties` on the build host) is sent as a warning, not a failure.
 6. The APK is sent via the Bot API when under the threshold, otherwise routed through
    WTelegramBot.
 7. Every N builds the bot runs `./gradlew clean` to free disk space.

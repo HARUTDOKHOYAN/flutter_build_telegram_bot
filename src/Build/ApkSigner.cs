@@ -6,10 +6,13 @@ using Microsoft.Extensions.Logging;
 
 namespace BuildChatBot.Build;
 
-public sealed record ApkVerifyResult(bool Verified, string Output);
+public sealed record ApkVerifyResult(bool Verified, bool DebugSigned, string Output);
 
 /// <summary>
-/// Runs `apksigner verify --verbose` to confirm the APK is signed.
+/// Runs `apksigner verify --verbose --print-certs` to confirm the APK is signed, and notes when the
+/// signer is the Android debug key. A debug key still "Verifies", but Gradle falls back to it when
+/// android/key.properties is missing on the build host, and Android then refuses to update a copy
+/// signed with the upload key (INSTALL_FAILED_UPDATE_INCOMPATIBLE) — the tester has to uninstall.
 /// </summary>
 public sealed class ApkSigner(BotConfig config, ILogger<ApkSigner> log)
 {
@@ -17,7 +20,7 @@ public sealed class ApkSigner(BotConfig config, ILogger<ApkSigner> log)
     {
         var apksigner = ResolveApksigner();
         if (apksigner is null)
-            return new ApkVerifyResult(false, "apksigner not found. Set APKSIGNER_PATH or install Android build-tools.");
+            return new ApkVerifyResult(false, false, "apksigner not found. Set APKSIGNER_PATH or install Android build-tools.");
 
         var psi = new ProcessStartInfo
         {
@@ -29,9 +32,10 @@ public sealed class ApkSigner(BotConfig config, ILogger<ApkSigner> log)
         };
         psi.ArgumentList.Add("verify");
         psi.ArgumentList.Add("--verbose");
+        psi.ArgumentList.Add("--print-certs");
         psi.ArgumentList.Add(apkPath);
 
-        log.LogInformation("$ {Bin} verify --verbose {Apk}", apksigner, apkPath);
+        log.LogInformation("$ {Bin} verify --verbose --print-certs {Apk}", apksigner, apkPath);
 
         var sb = new StringBuilder();
         using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -47,7 +51,10 @@ public sealed class ApkSigner(BotConfig config, ILogger<ApkSigner> log)
             && output.Contains("Verifies", StringComparison.OrdinalIgnoreCase)
             && !output.Contains("DOES NOT VERIFY", StringComparison.OrdinalIgnoreCase);
 
-        return new ApkVerifyResult(verified, output);
+        // The debug keystore Gradle generates is always "C=US, O=Android, CN=Android Debug".
+        var debugSigned = output.Contains("CN=Android Debug", StringComparison.OrdinalIgnoreCase);
+
+        return new ApkVerifyResult(verified, debugSigned, output);
     }
 
     private string? ResolveApksigner()

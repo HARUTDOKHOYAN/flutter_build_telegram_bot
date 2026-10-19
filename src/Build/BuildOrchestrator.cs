@@ -90,8 +90,18 @@ public sealed class BuildOrchestrator(
 
             string apkPath;
 
+            // Planned after the pull: the recipe reads the define file at HEAD.
+            var plan = flutter.Plan();
+            if (plan.Error is not null)
+            {
+                error = plan.Error;
+                await progress.UpdateImmediateAsync("❌ Build not started — see details below.", globalCt).ConfigureAwait(false);
+                await sender.SendTextAsync(chatId, $"❌ {plan.Error}", globalCt).ConfigureAwait(false);
+                return;
+            }
+
             // Step 6: cache short-circuit
-            var cached = !pull.WasUpdated ? cache.TryGet(commitSha) : null;
+            var cached = !pull.WasUpdated ? cache.TryGet(commitSha, plan.CacheTag) : null;
             if (cached is not null)
             {
                 fromCache = true;
@@ -102,7 +112,7 @@ public sealed class BuildOrchestrator(
             {
                 // Step 7: build
                 progress.SetStatus("🛠 Building APK (this can take 3–15 minutes)…");
-                var buildResult = await flutter.BuildReleaseApkAsync(buildId, globalCt).ConfigureAwait(false);
+                var buildResult = await flutter.BuildReleaseApkAsync(buildId, plan, globalCt).ConfigureAwait(false);
                 if (!buildResult.Success)
                 {
                     var tail = buildResult.LastError;
@@ -123,7 +133,7 @@ public sealed class BuildOrchestrator(
                 }
 
                 apkSize = new FileInfo(apkPath).Length;
-                cache.Store(commitSha, apkPath);
+                cache.Store(commitSha, plan.CacheTag, apkPath);
 
                 await progress.UpdateImmediateAsync(
                     $"✅ Build complete ({Mb(apkSize)} MB)", globalCt).ConfigureAwait(false);
@@ -142,7 +152,18 @@ public sealed class BuildOrchestrator(
                 await sender.SendTextAsync(chatId, error, globalCt).ConfigureAwait(false);
                 return;
             }
-            await progress.UpdateImmediateAsync("✅ APK signature verified", globalCt).ConfigureAwait(false);
+            await progress.UpdateImmediateAsync(
+                verify.DebugSigned ? "⚠️ APK signed with the debug key" : "✅ APK signature verified",
+                globalCt).ConfigureAwait(false);
+            if (verify.DebugSigned)
+            {
+                // A warning, not a failure: a debug-signed APK still installs on a clean phone.
+                await sender.SendTextAsync(chatId,
+                    "⚠️ This APK is signed with the Android debug key — `android/key.properties` is " +
+                    "missing on the build machine. It will not update a copy signed with the upload key " +
+                    "(Play or tool/release.sh builds): uninstall the app first, or add the keystore.",
+                    globalCt).ConfigureAwait(false);
+            }
 
             // Step 10 & 11: distribute
             var version = namer.ReadAppVersion();
@@ -150,7 +171,7 @@ public sealed class BuildOrchestrator(
             versionCode = version.Code;
             var fileName = namer.BuildFilename(version, commitSha);
             var elapsed = totalSw.Elapsed;
-            var caption = BuildCaption(version, commitSha, apkSize, elapsed, fromCache);
+            var caption = BuildCaption(version, commitSha, apkSize, elapsed, fromCache, verify.DebugSigned);
 
             await progress.UpdateImmediateAsync($"📤 Uploading {fileName} ({Mb(apkSize)} MB)…", globalCt).ConfigureAwait(false);
             await sender.SendDocumentAsync(chatId, apkPath, fileName, caption, globalCt).ConfigureAwait(false);
@@ -213,7 +234,8 @@ public sealed class BuildOrchestrator(
         }
     }
 
-    private string BuildCaption(AppVersion version, string sha, long sizeBytes, TimeSpan duration, bool fromCache)
+    private string BuildCaption(AppVersion version, string sha, long sizeBytes, TimeSpan duration, bool fromCache,
+        bool debugSigned)
     {
         var lines = new List<string>
         {
@@ -222,6 +244,7 @@ public sealed class BuildOrchestrator(
             $"commit:  {sha[..Math.Min(sha.Length, 12)]}",
             $"size:    {Mb(sizeBytes)} MB",
             $"time:    {duration:mm\\:ss}",
+            $"signed:  {(debugSigned ? "⚠️ debug key (uninstall an upload-key copy first)" : "release key")}",
             "",
             "Install:",
             " 1. Download on Android device",

@@ -27,6 +27,21 @@ public sealed class BotConfig
     public string? FlutterFlavor { get; set; }
     public string? FlutterTargetFile { get; set; }
     public string? FlutterExtraArgs { get; set; }
+    /// <summary>
+    /// File (relative to <see cref="RepoPath"/> unless absolute) passed as
+    /// `--dart-define-from-file`. The Airexys app refuses to start in release mode without the
+    /// API_BASE_URL/AUTH_BASE_URL defines it carries, so a missing file fails the build instead of
+    /// shipping an APK that closes at launch (2026-10-19: every bot APK did). `none` turns it off
+    /// (a blank env value falls back to this default like every other key).
+    /// </summary>
+    public string? FlutterDartDefineFile { get; set; } = "release.env";
+
+    /// <summary>Absolute path of <see cref="FlutterDartDefineFile"/>, or null when turned off.</summary>
+    public string? ResolvedDartDefineFile =>
+        string.IsNullOrWhiteSpace(FlutterDartDefineFile)
+        || FlutterDartDefineFile.Equals("none", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : Path.IsPathRooted(FlutterDartDefineFile) ? FlutterDartDefineFile : Path.Combine(RepoPath, FlutterDartDefineFile);
     public bool FlutterRunPubGet { get; set; } = true;
     public bool FlutterRunClean { get; set; } = true;
 
@@ -110,6 +125,7 @@ public sealed class BotConfig
         cfg.FlutterFlavor = EnvOrNull("FLUTTER_FLAVOR", cfg.FlutterFlavor);
         cfg.FlutterTargetFile = EnvOrNull("FLUTTER_TARGET_FILE", cfg.FlutterTargetFile);
         cfg.FlutterExtraArgs = EnvOrNull("FLUTTER_EXTRA_ARGS", cfg.FlutterExtraArgs);
+        cfg.FlutterDartDefineFile = EnvOrNull("FLUTTER_DART_DEFINE_FILE", cfg.FlutterDartDefineFile);
         cfg.FlutterRunPubGet = EnvBool("FLUTTER_RUN_PUB_GET", cfg.FlutterRunPubGet);
         cfg.FlutterRunClean = EnvBool("FLUTTER_RUN_CLEAN", cfg.FlutterRunClean);
 

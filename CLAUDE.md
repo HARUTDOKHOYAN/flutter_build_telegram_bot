@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BuildChatBot: a .NET 8 console app (single project, `src/BuildChatBot.csproj`) that runs a Telegram bot
 against one configured local Flutter repo. `/test_build_android` pulls the repo, runs
-`flutter build apk --release`, verifies the signature with `apksigner`, and sends the APK back to the
+`flutter build apk --release --dart-define-from-file=release.env`, verifies the signature with `apksigner`, and sends the APK back to the
 chat. `/release_ios_testflight` and `/release_ios_appstore` drive the iOS release: they run the Flutter
 repo's own `tool/release.sh`, upload the IPA with `xcrun altool`, and then talk to App Store Connect
 (processing, export compliance, version + review submission). There are no tests in this repo.
@@ -87,11 +87,16 @@ a pending release question.
 2. `GitService` — shells out to the system `git` binary for fetch/checkout/pull `--ff-only`
    (so SSH agents and credential helpers work); uses LibGit2Sharp only to read HEAD SHA.
    Honors `REPO_SSH_KEY_PATH` via `GIT_SSH_COMMAND`.
-3. `ApkCache` — if HEAD did not move and `cache/apks/app-<sha>.apk` exists, skip the build.
-4. `FlutterRunner` — `flutter clean` → `flutter pub get` → `flutter build apk --release ...`,
+3. `FlutterRunner.Plan()` — the build args (incl. `--dart-define-from-file` from
+   `FLUTTER_DART_DEFINE_FILE`, default `release.env`; missing file = build refused, because the
+   app's release mode refuses to start without those defines) and a cache tag hashing args +
+   define file. `ApkCache` — if HEAD did not move and `cache/apks/app-<sha>-<tag>.apk` exists,
+   skip the build. Old `app-<sha>.apk` files (pre-2026-10-19, built without defines) never match.
+4. `FlutterRunner` — `flutter clean` → `flutter pub get` → `flutter build apk <plan args>`,
    streaming stdout/stderr to `logs/build-<id>.log`; on failure returns the last 30 lines.
    Passes `JAVA_HOME`/`ANDROID_SDK_ROOT` into the child env.
-5. `ApkSigner` — `apksigner verify --verbose`; resolves the binary from `APKSIGNER_PATH`, then
+5. `ApkSigner` — `apksigner verify --verbose --print-certs`; flags `CN=Android Debug` (Gradle's
+   fallback without `android/key.properties`) as a chat warning + caption line; resolves the binary from `APKSIGNER_PATH`, then
    newest `build-tools/*`, then PATH.
 6. `ArtifactNamer` — reads `version:` from the repo's `pubspec.yaml`, names the file
    `app-<flavor|main>-<name>+<code>-<sha7>.apk`.
