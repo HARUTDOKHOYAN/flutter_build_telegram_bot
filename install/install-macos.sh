@@ -46,6 +46,25 @@ step() { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 ok()   { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[1;33m!\033[0m %s\n' "$*"; }
 
+# The Android SDK the bot should build with: an explicit ANDROID_SDK_ROOT / ANDROID_HOME wins,
+# then the first known SDK that has cmdline-tools. Flutter's release-AAB check runs apkanalyzer
+# from <sdk>/cmdline-tools and reports "failed to strip debug symbols" when it is missing. The
+# old fixed default ~/Library/Android/sdk did exactly that on the Mac server (2026-10-26): the
+# Homebrew sdkmanager had filled it with platforms but no cmdline-tools, while the working SDK
+# was Homebrew's own folder.
+resolve_android_sdk() {
+    local d
+    for d in "${ANDROID_SDK_ROOT:-}" "${ANDROID_HOME:-}"; do
+        [[ -n "$d" ]] && { echo "$d"; return; }
+    done
+    for d in "$HOME/Library/Android/sdk" \
+             /opt/homebrew/share/android-commandlinetools \
+             /usr/local/share/android-commandlinetools; do
+        [[ -x "$d/cmdline-tools/latest/bin/sdkmanager" ]] && { echo "$d"; return; }
+    done
+    echo "$HOME/Library/Android/sdk"
+}
+
 prompt_yn() {
     local q="$1" default="${2:-N}" ans
     if [[ "$NON_INTERACTIVE" == "1" ]]; then
@@ -99,7 +118,7 @@ else
 
     # ─── Step 4: Android SDK packages ────────────────────────────────
     step "Android SDK packages"
-    export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
+    export ANDROID_SDK_ROOT="$(resolve_android_sdk)"
     mkdir -p "$ANDROID_SDK_ROOT"
     SDKMANAGER="$(command -v sdkmanager || true)"
     if [[ -z "$SDKMANAGER" ]]; then
@@ -215,7 +234,7 @@ fi
 step "env.local wizard"
 export ENV_FILE EXAMPLE_FILE NON_INTERACTIVE FORCE
 export DEFAULT_JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 17 2>/dev/null || echo /opt/homebrew/opt/openjdk@17)}"
-export DEFAULT_ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}"
+export DEFAULT_ANDROID_SDK_ROOT="$(resolve_android_sdk)"
 if [[ -n "${REPO_PATH_OVERRIDE:-}" ]]; then
     # Inject as defaults into the wizard via env vars that the example file documents.
     # The wizard reads its prompts with `ask`, so we let the user accept these defaults.
