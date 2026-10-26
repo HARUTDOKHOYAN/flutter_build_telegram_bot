@@ -2,13 +2,15 @@
 
 Telegram bot that drives the mobile release process for a configured local Flutter
 repository. It builds test APKs on demand and delivers the signed artifact back to the
-requester, ships iOS builds to **TestFlight**, and submits a processed TestFlight build to
-the **App Store** for review — all from chat. Built on .NET 8 with `Telegram.Bot` for the
+requester, ships iOS builds to **TestFlight**, submits a processed TestFlight build to
+the **App Store** for review, and ships Android builds to **Google Play internal testing** —
+all from chat. Built on .NET 8 with `Telegram.Bot` for the
 standard Bot API and `WTelegramBot` for >50 MB uploads (up to 2 GB).
 
-The iOS release build itself is run by the Flutter repo's own `tool/release.sh`, which
-stays the single source of truth for preflight checks, the version bump and the clean
-rules. The bot only passes flags to it, uploads the result, and talks to App Store Connect.
+The iOS and Android release builds themselves are run by the Flutter repo's own
+`tool/release.sh`, which stays the single source of truth for preflight checks, the version
+bump and the clean rules. The bot only passes flags to it, uploads the result, and talks to
+App Store Connect or Google Play.
 
 Driven by the spec in
 [`AirCaseNots/ChatBot for Android build.md`](../AirCaseNots/ChatBot%20for%20Android%20build.md).
@@ -111,6 +113,28 @@ API → Team Keys → Generate, with the **App Manager** role. The `.p8` can be 
 only once; store it outside the repo (e.g. `~/.appstoreconnect/private_keys/`). Key ID and
 Issuer ID are both shown on that page.
 
+### Google Play keys
+
+Optional at startup, like the Apple keys. `/release_android_play` refuses to run and lists
+the missing ones.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | — | Absolute path to the service account JSON key |
+| `GOOGLE_PLAY_PACKAGE_NAME` | `com.airexys.app` | applicationId of the app in Play Console |
+| `GOOGLE_PLAY_TRACK` | `internal` | Track the release goes to: `internal`, `alpha`, `beta` or a custom closed track |
+| `GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS` | `900` | Time allowed for the `.aab` upload itself |
+
+One-time setup (the API cannot make the very first upload of an app):
+
+1. Play Console: the app exists, and one `.aab` was uploaded by hand to a testing track.
+2. Google Cloud console (any project): enable **Google Play Android Developer API**, create a
+   service account, then Keys → Add key → JSON. Store the file outside the repo
+   (e.g. `~/.googleplay/`).
+3. Play Console → Users and permissions → Invite new users: the service account's e-mail
+   (`client_email` in the JSON). Under app permissions for the app, give it
+   **Release apps to testing tracks**. It can take a few minutes to start working.
+
 ## Telegram setup
 
 1. **Bot token** — talk to [@BotFather](https://t.me/BotFather) → `/newbot`.
@@ -125,14 +149,15 @@ Issuer ID are both shown on that page.
 | `/test_build_android` | Pull configured branch, build a test APK, verify the signature, send it back for side-load install |
 | `/release_ios_testflight` | Ask for version + build number, build the IPA via `tool/release.sh`, upload it, wait for processing, report "in TestFlight" |
 | `/release_ios_appstore` | List processed TestFlight builds, pick one, create/attach the App Store version and submit it for review |
+| `/release_android_play` | Ask for version + build number, build the AAB via `tool/release.sh`, upload it and roll it out to Google Play internal testing |
 | `/cancel` | Cancel a pending question (version, build number, confirmation) |
 | `/status` | Show test-build state and release state |
 | `/version` | Show bot version + currently-configured branch/flavor/platform |
 | `/help` | Brief usage |
 
 Questions asked by the release commands expire after `RELEASE_PROMPT_TIMEOUT_SECONDS`.
-Android test builds and iOS release builds share the same single build slot, so only one
-of them runs at a time.
+Android test builds and iOS/Android release builds share the same single build slot, so only
+one of them runs at a time.
 
 ## How a build runs
 
@@ -194,6 +219,27 @@ Apple rejects a submission when the store listing is incomplete (missing screens
 missing metadata, no privacy answers, and so on). Those errors are shown **verbatim** in
 chat — fix them in App Store Connect and run the command again.
 
+### `/release_android_play`
+
+1. Same two questions as `/release_ios_testflight` (version, build number), then **Yes / No**.
+   iOS and Android share `pubspec.yaml`'s `version:`, so `Next` is always above both stores'
+   last build.
+2. Check Google Play access first (open and delete an edit). A wrong key, a missing
+   permission or an unknown package fails here, in seconds, before anything is built.
+3. Acquire the build slot, `git pull --ff-only`, then run
+   `tool/release.sh --platform android --version X.Y.Z --build-number N` (signed with
+   `android/key.properties`; the script refuses to build without it). A failed script
+   reverts the `pubspec.yaml` bump.
+4. Upload `dist/<version>+<build>/*.aab` through the Google Play Developer API in one edit:
+   upload the bundle → set the `GOOGLE_PLAY_TRACK` release to it (status `completed`) →
+   commit. Testers get the update in the Play Store within minutes; there is no processing
+   wait like TestFlight's.
+5. Commit and push `pubspec.yaml` as `release: X.Y.Z+N (Android Play internal)`.
+
+If the app has never been published, Play accepts only a **draft** release. The bot then
+uploads it as a draft and tells you to press "Start rollout" once in Play Console; after that
+first rollout every release goes out by itself.
+
 ## Project layout
 
 ```
@@ -237,7 +283,7 @@ BuildChatBot/
     │   ├── IReleaseScriptRunner.cs
     │   └── ReleaseScriptRunner.cs            # runs the Flutter repo's tool/release.sh
     ├── Release/
-    │   ├── ReleaseOrchestrator.cs            # TestFlight + App Store flows
+    │   ├── ReleaseOrchestrator.cs            # TestFlight + App Store + Google Play flows
     │   └── ReleaseConversation.cs            # pending questions per chat
     ├── Apple/
     │   ├── IIpaUploader.cs
@@ -246,6 +292,10 @@ BuildChatBot/
     │   ├── AppStoreConnectClient.cs          # builds / appStoreVersions / reviewSubmissions
     │   ├── AscJwtFactory.cs                  # ES256 JWT from the .p8 key
     │   └── AscJson.cs
+    ├── GooglePlay/
+    │   ├── IGooglePlayClient.cs
+    │   ├── GooglePlayClient.cs               # edits: insert / bundles.upload / tracks.update / commit
+    │   └── GoogleServiceAccountToken.cs      # OAuth token from the service account JSON (RS256 JWT)
     └── Persistence/BuildLogStore.cs
 ```
 

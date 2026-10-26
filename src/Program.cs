@@ -1,6 +1,7 @@
 using BuildChatBot.Apple;
 using BuildChatBot.Build;
 using BuildChatBot.Config;
+using BuildChatBot.GooglePlay;
 using BuildChatBot.Persistence;
 using BuildChatBot.Release;
 using BuildChatBot.Telegram;
@@ -68,6 +69,8 @@ public static class Program
                 services.AddSingleton<IReleaseScriptRunner, ReleaseScriptRunner>();
                 services.AddSingleton<IIpaUploader, AltoolIpaUploader>();
                 services.AddSingleton<IAppStoreConnectClient, AppStoreConnectClient>();
+                // Android release pipeline (tool/release.sh -> Google Play Developer API).
+                services.AddSingleton<IGooglePlayClient, GooglePlayClient>();
                 services.AddSingleton<ReleaseConversation>();
                 services.AddSingleton<ReleaseOrchestrator>();
                 services.AddSingleton<UpdateRouter>();

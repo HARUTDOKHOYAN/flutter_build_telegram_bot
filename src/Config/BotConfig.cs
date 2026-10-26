@@ -93,6 +93,16 @@ public sealed class BotConfig
     /// <summary>When true, mark processed builds as "does not use non-exempt encryption" so TestFlight doesn't stall on Missing Compliance.</summary>
     public bool AppleSetExportComplianceExempt { get; set; } = true;
 
+    // Google Play (only needed for /release_android_play; validated lazily like the Apple keys)
+    /// <summary>Absolute path to the service account JSON key that has release rights in Play Console.</summary>
+    public string? GooglePlayServiceAccountJson { get; set; }
+    /// <summary>Android applicationId of the app in Play Console.</summary>
+    public string GooglePlayPackageName { get; set; } = "com.airexys.app";
+    /// <summary>Track the release goes to: internal (the Play twin of TestFlight), alpha, beta or a custom closed track.</summary>
+    public string GooglePlayTrack { get; set; } = "internal";
+    /// <summary>Seconds allowed for the .aab upload itself (a ~60 MB bundle on a slow uplink can take minutes).</summary>
+    public int GooglePlayUploadTimeoutSeconds { get; set; } = 900;
+
     /// <summary>
     /// Build a <see cref="BotConfig"/>. Precedence (highest wins):
     ///   1. Environment variables (env.local is loaded into process env at startup).
@@ -163,6 +173,12 @@ public sealed class BotConfig
         cfg.AppleProcessingPollSeconds = EnvInt("APPLE_PROCESSING_POLL_SECONDS", cfg.AppleProcessingPollSeconds);
         cfg.AppleSetExportComplianceExempt = EnvBool("APPLE_SET_EXPORT_COMPLIANCE_EXEMPT", cfg.AppleSetExportComplianceExempt);
 
+        // Google Play
+        cfg.GooglePlayServiceAccountJson = EnvOrNull("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", cfg.GooglePlayServiceAccountJson);
+        cfg.GooglePlayPackageName = Env("GOOGLE_PLAY_PACKAGE_NAME", cfg.GooglePlayPackageName);
+        cfg.GooglePlayTrack = Env("GOOGLE_PLAY_TRACK", cfg.GooglePlayTrack);
+        cfg.GooglePlayUploadTimeoutSeconds = EnvInt("GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS", cfg.GooglePlayUploadTimeoutSeconds);
+
         return cfg;
     }
 
@@ -180,6 +196,7 @@ public sealed class BotConfig
 
         if (ReleasePromptTimeoutSeconds < 30) errors.Add("RELEASE_PROMPT_TIMEOUT_SECONDS must be >= 30.");
         if (AppleProcessingPollSeconds < 5) errors.Add("APPLE_PROCESSING_POLL_SECONDS must be >= 5.");
+        if (GooglePlayUploadTimeoutSeconds < 60) errors.Add("GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS must be >= 60.");
 
         if (errors.Count > 0)
             throw new InvalidOperationException("Invalid configuration:\n - " + string.Join("\n - ", errors));
@@ -204,6 +221,20 @@ public sealed class BotConfig
         if (string.IsNullOrWhiteSpace(AppleApiKeyPath)) missing.Add("APPLE_API_KEY_PATH");
         else if (!File.Exists(AppleApiKeyPath)) missing.Add($"APPLE_API_KEY_PATH (file not found: {AppleApiKeyPath})");
         if (string.IsNullOrWhiteSpace(AppleBundleId)) missing.Add("APPLE_BUNDLE_ID");
+        return missing;
+    }
+
+    /// <summary>True when the service account key is set and present on disk.</summary>
+    public bool GooglePlayConfigured => MissingGooglePlayKeys().Count == 0;
+
+    /// <summary>The Google Play keys that are missing; the Android release command sends this list to the chat.</summary>
+    public IReadOnlyList<string> MissingGooglePlayKeys()
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(GooglePlayServiceAccountJson)) missing.Add("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+        else if (!File.Exists(GooglePlayServiceAccountJson))
+            missing.Add($"GOOGLE_PLAY_SERVICE_ACCOUNT_JSON (file not found: {GooglePlayServiceAccountJson})");
+        if (string.IsNullOrWhiteSpace(GooglePlayPackageName)) missing.Add("GOOGLE_PLAY_PACKAGE_NAME");
         return missing;
     }
 

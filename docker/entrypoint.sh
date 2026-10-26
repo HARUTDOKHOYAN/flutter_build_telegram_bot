@@ -101,6 +101,11 @@ fi
 apksigner=""
 host_signer="$(env_value APKSIGNER_PATH)"
 if [ -n "$host_signer" ] && [ -f "$host_signer" ]; then apksigner="$host_signer"; fi
+# The Play key is a host path too; blank it unless it is visible in here, so
+# /release_android_play answers "not configured" instead of failing mid-release.
+play_json=""
+host_play="$(env_value GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)"
+if [ -n "$host_play" ] && [ -f "$host_play" ]; then play_json="$host_play"; fi
 
 umask 077
 {
@@ -112,6 +117,7 @@ umask 077
     printf 'ANDROID_SDK_ROOT=%s\n' "$ANDROID_SDK_ROOT"
     printf 'APKSIGNER_PATH=%s\n' "$apksigner"
     printf 'REPO_SSH_KEY_PATH=%s\n' "$ssh_key"
+    printf 'GOOGLE_PLAY_SERVICE_ACCOUNT_JSON=%s\n' "$play_json"
     printf 'EXTRA_PATH=\n'
     printf 'LOG_DIR=/data/logs\n'
     printf 'BUILD_RECORD_PATH=/data/logs/builds.jsonl\n'

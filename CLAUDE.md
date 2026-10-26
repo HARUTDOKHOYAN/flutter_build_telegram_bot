@@ -9,7 +9,9 @@ against one configured local Flutter repo. `/test_build_android` pulls the repo,
 `flutter build apk --release --dart-define-from-file=release.env`, verifies the signature with `apksigner`, and sends the APK back to the
 chat. `/release_ios_testflight` and `/release_ios_appstore` drive the iOS release: they run the Flutter
 repo's own `tool/release.sh`, upload the IPA with `xcrun altool`, and then talk to App Store Connect
-(processing, export compliance, version + review submission). There are no tests in this repo.
+(processing, export compliance, version + review submission). `/release_android_play` runs the same
+script with `--platform android` and puts the `.aab` on a Google Play testing track (default `internal`)
+through the Play Developer API. There are no tests in this repo.
 
 ## Commands
 
@@ -37,7 +39,9 @@ Release smoke test (macOS + Xcode only, and it really ships a build): send
 `logs/release-<buildId>.log`; the build must land in TestFlight. Cheaper checks that do not ship
 anything: `/cancel` at the first question must clear the pending prompt; removing an `APPLE_*` key
 from `env.local` must make the command refuse and name that key; `tool/release.sh --dry-run` in the
-Flutter repo exercises the preflight without building.
+Flutter repo exercises the preflight without building. For Google Play, `/release_android_play` with the
+key set and answered `Yes` runs the access check first: a wrong package name or a service account
+without Play Console rights must fail there ("nothing was built"), before the build slot is taken.
 
 ## Configuration model
 
@@ -61,7 +65,10 @@ plus `APPLE_PROCESSING_TIMEOUT_SECONDS`, `APPLE_PROCESSING_POLL_SECONDS`,
 Android-only machine. They are validated lazily: `BotConfig.AppleConfigured` gates the release
 commands and `BotConfig.MissingAppleKeys()` produces the list the bot sends back to the chat
 (it also flags an `APPLE_API_KEY_PATH` that points at a nonexistent file). Keep that pattern for any
-future optional-credential group.
+future optional-credential group. The Google Play keys follow it: `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`
+(the service account JSON key; `GooglePlayConfigured` / `MissingGooglePlayKeys()`, which also flags a
+missing file), `GOOGLE_PLAY_PACKAGE_NAME` (default `com.airexys.app`), `GOOGLE_PLAY_TRACK` (default
+`internal`), `GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS`.
 
 When adding a config knob, touch all four places: property + `Env*()` line in `BotConfig.cs`,
 the documented key in `install/common/env.local.example`, and (if required) the wizard in
@@ -111,7 +118,8 @@ a pending release question.
   Yes/No confirm), expires it after `RELEASE_PROMPT_TIMEOUT_SECONDS`, and is what `/cancel` clears.
   Answers arrive either as text or as inline-keyboard `CallbackQuery` updates (build picker,
   Yes/No), both routed from `UpdateRouter`.
-- `ReleaseOrchestrator` runs the two flows after confirmation: TestFlight (pull → script → altool
+- `ReleaseOrchestrator` runs the flows after confirmation (TestFlight and Play share
+  `AskVersionAndBuildAsync`, `PullAndBuildAsync` and `CommitVersionBumpAsync`): TestFlight (pull → script → altool
   upload → commit/push pubspec → poll processing → export compliance) and App Store (list processed
   builds → create/reuse the `appStoreVersion` with `releaseType=AFTER_APPROVAL` → attach the build →
   `reviewSubmissions`).
@@ -120,6 +128,15 @@ a pending release question.
   `logs/release-<buildId>.log`, and parses the script's `==>` step lines to drive the chat status
   message.
 - `IIpaUploader` / `AltoolIpaUploader` runs `xcrun altool --upload-app` with the API key.
+- `IGooglePlayClient` / `GooglePlayClient` (`src/GooglePlay/`) is the Play Developer API v3 client:
+  one edit per release (insert → `bundles` media upload → `tracks.update` with a `completed` release →
+  `commit`). `CheckAccessAsync` opens and deletes an edit — `/release_android_play` calls it **before**
+  taking the build slot, so a bad key/permission/package fails before a version bump is spent. Two
+  automatic retries: a never-published ("draft") app only accepts `status: draft`, so the release is
+  retried as a draft and the chat is told to roll it out once by hand; a commit that asks for
+  `changesNotSentForReview=true` is retried with it. `GoogleServiceAccountToken` does the OAuth
+  JWT-bearer grant by hand (RS256 from the JSON's `private_key`) instead of adding Google.Apis.*.
+  The API cannot make an app's first upload; that one is manual in Play Console.
 - `IAppStoreConnectClient` / `AppStoreConnectClient` is the App Store Connect REST client;
   `AscJwtFactory` signs the ES256 JWT from the `.p8` key, `AscJson` holds the DTOs.
 
@@ -133,13 +150,13 @@ reimplement any of it in C#.
 
 Two rules the orchestrator must keep: on a failed script run the `pubspec.yaml` bump is **reverted**
 (`git checkout -- pubspec.yaml`) so the next attempt starts clean; on success the bump is committed
-and pushed as `release: X.Y.Z+N (iOS TestFlight)` unless `RELEASE_COMMIT_VERSION_BUMP=false` — which
+and pushed as `release: X.Y.Z+N (iOS TestFlight)` (or `(Android Play internal)`) unless `RELEASE_COMMIT_VERSION_BUMP=false` — which
 means the bot's git credentials need **push** rights. The IPA is never sent to chat.
 
-iOS releases take the **same single `BuildQueue` slot** as `/test_build_android`, so a test build and
+iOS and Android releases take the **same single `BuildQueue` slot** as `/test_build_android`, so a test build and
 a release never run concurrently on the machine (Gradle/Xcode caches and the pubspec would collide).
 `BuildLogStore` records both: each `logs/builds.jsonl` line carries a `Kind` of `test_apk`,
-`ios_testflight` or `ios_appstore`.
+`ios_testflight`, `ios_appstore` or `android_play`.
 
 **Telegram layer** (`src/Telegram/`): `HybridTelegramSender` implements `ITelegramSender`.
 Text and files under `TELEGRAM_LARGE_FILE_THRESHOLD_MB` go through `Telegram.Bot`; larger
@@ -162,7 +179,8 @@ when adding or renaming a command.
   with `--env` on it. DotNetEnv applies lines in order, so the appended lines win and an empty
   value unsets the key. No C# change was needed; keep the bot unaware of Docker.
 - A new config key that holds a **host path** must also get a container override in
-  `entrypoint.sh`, or the container will try to use the host path.
+  `entrypoint.sh`, or the container will try to use the host path. `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`
+  is blanked there unless the file exists inside the container.
 - The entrypoint also copies `/ssh` → `~/.ssh` (mode 600, `IgnoreUnknown UseKeychain`),
   clones `REPO_CLONE_URL` into an empty `/repo`, and copies `/repo-overlay` (gitignored files
   like `android/key.properties` + keystore) over the repo. Host-side mount settings live in a

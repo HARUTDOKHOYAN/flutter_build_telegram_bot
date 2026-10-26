@@ -27,6 +27,7 @@ public sealed class UpdateRouter(
         "  /test_build_android — build a test APK (side-load) from the configured branch\n" +
         "  /release_ios_testflight — build iOS and upload it to TestFlight\n" +
         "  /release_ios_appstore — submit a TestFlight build to App Store review (auto-release after approval)\n" +
+        "  /release_android_play — build the Android .aab and roll it out to Google Play internal testing\n" +
         "  /cancel — cancel the question I'm currently waiting on\n" +
         "  /status — show current build and release state\n" +
         "  /version — show bot + config version\n" +
@@ -81,6 +82,10 @@ public sealed class UpdateRouter(
 
             case "/release_ios_appstore":
                 _ = Task.Run(() => release.RunAppStoreAsync(chatId, ct), ct);
+                break;
+
+            case "/release_android_play":
+                _ = Task.Run(() => release.RunPlayAsync(chatId, ct), ct);
                 break;
 
             case "/cancel":
