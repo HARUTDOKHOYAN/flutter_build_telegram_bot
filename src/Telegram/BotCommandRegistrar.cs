@@ -16,13 +16,11 @@ public sealed class BotCommandRegistrar(ITelegramBotClient bot, ILogger<BotComma
     // Order here is the order users see in the popup.
     private static readonly BotCommand[] Commands =
     {
-        new() { Command = "test_build_android", Description = "Build a test APK (side-load) from the configured branch" },
-        new() { Command = "release_ios_testflight", Description = "Build iOS and upload it to TestFlight" },
-        new() { Command = "release_ios_appstore",   Description = "Submit a TestFlight build to App Store review" },
-        new() { Command = "release_android_play",   Description = "Build Android and upload it to Google Play internal testing" },
-        new() { Command = "cancel",        Description = "Cancel the question I'm waiting on" },
+        new() { Command = "test_build_android", Description = "Build a local APK" },
+        new() { Command = "release_ios_testflight", Description = "Upload it to TestFlight" },
+        new() { Command = "release_ios_appstore",   Description = "TestFlight to App Store" },
+        new() { Command = "release_android_play",   Description = "Google Play Testing" },
         new() { Command = "status",        Description = "Show current build and release state" },
-        new() { Command = "version",       Description = "Show bot version and config" },
         new() { Command = "help",          Description = "Usage information" },
     };
 
