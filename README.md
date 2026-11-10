@@ -123,7 +123,7 @@ the missing ones.
 | `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | — | Absolute path to the service account JSON key |
 | `GOOGLE_PLAY_PACKAGE_NAME` | `com.airexys.app` | applicationId of the app in Play Console |
 | `GOOGLE_PLAY_TRACK` | `internal` | Track the release goes to: `internal`, `alpha`, `beta` or a custom closed track |
-| `GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS` | `900` | Time allowed for the `.aab` upload itself |
+| `GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS` | `900` | Time allowed for the whole `.aab` upload (all chunks and retries) |
 
 One-time setup (the API cannot make the very first upload of an app):
 
@@ -231,8 +231,9 @@ chat — fix them in App Store Connect and run the command again.
    `android/key.properties`; the script refuses to build without it). A failed script
    reverts the `pubspec.yaml` bump.
 4. Upload `dist/<version>+<build>/*.aab` through the Google Play Developer API in one edit:
-   upload the bundle → set the `GOOGLE_PLAY_TRACK` release to it (status `completed`) →
-   commit. Testers get the update in the Play Store within minutes; there is no processing
+   upload the bundle (resumable, 8 MiB chunks with 120 s and 5 attempts each, progress in
+   the chat; a stalled chunk is resumed from the byte Play confirms) → set the
+   `GOOGLE_PLAY_TRACK` release to it (status `completed`) → commit. Testers get the update in the Play Store within minutes; there is no processing
    wait like TestFlight's.
 5. Commit and push `pubspec.yaml` as `release: X.Y.Z+N (Android Play internal)`.
 

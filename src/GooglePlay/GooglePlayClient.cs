@@ -19,11 +19,26 @@ public sealed class GooglePlayClient : IGooglePlayClient
     private const string Scope = "https://www.googleapis.com/auth/androidpublisher";
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(90);
 
+    // Resumable upload: the .aab goes up in chunks (a multiple of 256 KiB, as Google requires), each
+    // with its own timeout and retries. On 2026-11-10 the single 56 MB POST stalled on the build
+    // host for the whole 900 s budget twice in a row, on a 48 Mbit/s uplink that curl pushed the same
+    // file through in seconds: a socket-level stall that only a fresh request gets past. Resuming
+    // asks Play how much it has and sends the rest, so a stalled chunk costs ChunkTimeout, not the
+    // whole run. Attempts cover both a stalled chunk and a Play 5xx.
+    private const int ChunkSize = 8 * 1024 * 1024;
+    private static readonly TimeSpan ChunkTimeout = TimeSpan.FromSeconds(120);
+    private const int ChunkAttempts = 5;
+
     private readonly BotConfig _config;
     private readonly ILogger<GooglePlayClient> _log;
     // No client-wide timeout: a bundle upload is bounded by GOOGLE_PLAY_UPLOAD_TIMEOUT_SECONDS,
-    // every other call by CallTimeout, each through its own linked token.
-    private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    // every other call by CallTimeout, each through its own linked token. No auto-redirect: the
+    // resumable protocol answers "308 Resume Incomplete" to a chunk, which must reach this code
+    // as a response, not be chased as a redirect.
+    private readonly HttpClient _http = new(new SocketsHttpHandler { AllowAutoRedirect = false })
+    {
+        Timeout = Timeout.InfiniteTimeSpan,
+    };
     private readonly Lazy<GoogleServiceAccountToken> _token;
 
     public GooglePlayClient(BotConfig config, ILogger<GooglePlayClient> log)
@@ -59,8 +74,11 @@ public sealed class GooglePlayClient : IGooglePlayClient
         try
         {
             var sizeMb = new FileInfo(aabPath).Length / (1024.0 * 1024.0);
-            await Step($"📤 Uploading {Path.GetFileName(aabPath)} ({sizeMb:0.0} MB) to Google Play").ConfigureAwait(false);
-            var versionCode = await UploadBundleAsync(editId, aabPath, ct).ConfigureAwait(false);
+            var name = Path.GetFileName(aabPath);
+            await Step($"📤 Uploading {name} ({sizeMb:0.0} MB) to Google Play").ConfigureAwait(false);
+            var versionCode = await UploadBundleAsync(editId, aabPath,
+                sent => Step($"📤 Uploading {name}: {sent / (1024.0 * 1024.0):0.0} / {sizeMb:0.0} MB to Google Play"),
+                ct).ConfigureAwait(false);
 
             await Step($"🏷 Setting the {track} track to {releaseName}").ConfigureAwait(false);
             var status = "completed";
@@ -110,23 +128,42 @@ public sealed class GooglePlayClient : IGooglePlayClient
     private Task DeleteEditAsync(string editId, CancellationToken ct) =>
         SendJsonAsync(HttpMethod.Delete, $"{BaseUrl}{Esc(Package)}/edits/{Esc(editId)}", null, ct);
 
-    private async Task<long> UploadBundleAsync(string editId, string aabPath, CancellationToken ct)
+    /// <summary>
+    /// Uploads the bundle with Google's resumable protocol: one POST opens a session, then PUTs of
+    /// ChunkSize bytes with a Content-Range each. Play answers 308 with the bytes it holds until the
+    /// last chunk, which gets the bundle JSON. A chunk that stalls or fails is retried after asking
+    /// Play where to resume, so a bad socket costs one chunk, not the run. <paramref name="onSent"/>
+    /// gets the running byte count after each chunk.
+    /// </summary>
+    private async Task<long> UploadBundleAsync(string editId, string aabPath, Func<long, Task> onSent,
+        CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(_config.GooglePlayUploadTimeoutSeconds));
-
-        await using var file = File.OpenRead(aabPath);
-        using var request = new HttpRequestMessage(HttpMethod.Post,
-            $"{UploadUrl}{Esc(Package)}/edits/{Esc(editId)}/bundles?uploadType=media")
-        {
-            Content = new StreamContent(file),
-        };
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        var budget = timeout.Token;
 
         JsonNode? root;
         try
         {
-            root = await SendAsync(request, timeout.Token).ConfigureAwait(false);
+            await using var file = File.OpenRead(aabPath);
+            var total = file.Length;
+            var session = await OpenUploadSessionAsync(editId, total, budget).ConfigureAwait(false);
+
+            var buffer = new byte[ChunkSize];
+            long offset = 0;
+            root = null;
+            while (root is null)
+            {
+                file.Position = offset;
+                var length = await ReadFullyAsync(file, buffer, (int)Math.Min(ChunkSize, total - offset), budget)
+                    .ConfigureAwait(false);
+                var (next, done) = await SendChunkAsync(session, buffer, length, offset, total, budget)
+                    .ConfigureAwait(false);
+                root = done;
+                offset = next;
+                try { await onSent(Math.Min(offset, total)).ConfigureAwait(false); }
+                catch (Exception ex) { _log.LogDebug(ex, "onSent threw at {Offset}", offset); }
+            }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -141,6 +178,144 @@ public sealed class GooglePlayClient : IGooglePlayClient
         return code.GetValueKind() == System.Text.Json.JsonValueKind.String
             ? long.Parse(code.GetValue<string>(), CultureInfo.InvariantCulture)
             : code.GetValue<long>();
+    }
+
+    /// <summary>Opens a resumable upload session; the returned URI takes the chunks.</summary>
+    private async Task<Uri> OpenUploadSessionAsync(string editId, long total, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(CallTimeout);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"{UploadUrl}{Esc(Package)}/edits/{Esc(editId)}/bundles?uploadType=resumable")
+        {
+            Content = new ByteArrayContent(Array.Empty<byte>()),
+        };
+        request.Headers.TryAddWithoutValidation("X-Upload-Content-Type", "application/octet-stream");
+        request.Headers.TryAddWithoutValidation("X-Upload-Content-Length", total.ToString(CultureInfo.InvariantCulture));
+
+        using var response = await SendRawAsync(request, timeout.Token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            var status = (int)response.StatusCode;
+            var detail = Describe(status, text);
+            _log.LogWarning("POST {Url} failed: {Status} {Detail}", request.RequestUri, status, detail);
+            throw new GooglePlayException(status, detail);
+        }
+
+        var session = response.Headers.Location;
+        if (session is null)
+            throw new GooglePlayException((int)response.StatusCode,
+                "Google Play opened a resumable upload without a session URI (no Location header).");
+        return session;
+    }
+
+    /// <summary>
+    /// Sends one chunk. Returns the offset to continue from and, on the final chunk, the bundle
+    /// JSON. A stalled or 5xx chunk is retried in place up to ChunkAttempts times; when Play reports
+    /// it already holds part of the chunk, the new offset is returned so the caller re-reads from
+    /// there instead.
+    /// </summary>
+    private async Task<(long Next, JsonNode? Done)> SendChunkAsync(Uri session, byte[] buffer, int length,
+        long offset, long total, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ChunkTimeout);
+            string failure;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Put, session)
+                {
+                    Content = new ByteArrayContent(buffer, 0, length),
+                };
+                request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                request.Content.Headers.ContentRange = new ContentRangeHeaderValue(offset, offset + length - 1, total);
+
+                using var response = await SendRawAsync(request, timeout.Token).ConfigureAwait(false);
+                var status = (int)response.StatusCode;
+                if (status == 308)
+                    return (ReceivedUpTo(response), null);
+                var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                    return (total, ParseJson(text, status));
+                var detail = Describe(status, text);
+                if (status < 500 && status != 408 && status != 429)
+                {
+                    _log.LogWarning("PUT chunk at {Offset} failed: {Status} {Detail}", offset, status, detail);
+                    throw new GooglePlayException(status, detail);
+                }
+                failure = $"{status} {detail}";
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                failure = $"no reply within {ChunkTimeout.TotalSeconds:0} s";
+            }
+            catch (HttpRequestException ex)
+            {
+                failure = ex.Message;
+            }
+
+            if (attempt >= ChunkAttempts)
+                throw new GooglePlayException(408,
+                    $"The bundle chunk at {offset / (1024.0 * 1024.0):0.0} MB failed {ChunkAttempts} times; last: {failure}.");
+
+            _log.LogWarning("Chunk at {Offset} attempt {Attempt}/{Max} failed ({Failure}); asking Play where to resume.",
+                offset, attempt, ChunkAttempts, failure);
+            await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct).ConfigureAwait(false);
+
+            var (resume, done) = await QueryResumeOffsetAsync(session, total, ct).ConfigureAwait(false);
+            if (done is not null) return (total, done);
+            if (resume != offset) return (resume, null);
+        }
+    }
+
+    /// <summary>Asks Play how much of the upload it holds: the next offset, or the bundle if it is complete.</summary>
+    private async Task<(long Next, JsonNode? Done)> QueryResumeOffsetAsync(Uri session, long total, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(CallTimeout);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, session)
+        {
+            Content = new ByteArrayContent(Array.Empty<byte>()),
+        };
+        request.Content.Headers.ContentRange = new ContentRangeHeaderValue(total);
+
+        using var response = await SendRawAsync(request, timeout.Token).ConfigureAwait(false);
+        var status = (int)response.StatusCode;
+        if (status == 308) return (ReceivedUpTo(response), null);
+        var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+        if (response.IsSuccessStatusCode) return (total, ParseJson(text, status));
+        // The session itself is gone (404/410 after a day, or a 4xx we cannot resume from).
+        var detail = Describe(status, text);
+        _log.LogWarning("Resume query failed: {Status} {Detail}", status, detail);
+        throw new GooglePlayException(status, detail);
+    }
+
+    /// <summary>The offset after the last byte Play confirms in a 308's "Range: bytes=0-N"; 0 when it holds nothing.</summary>
+    private static long ReceivedUpTo(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Range", out var values)) return 0;
+        var range = values.FirstOrDefault() ?? "";
+        var dash = range.LastIndexOf('-');
+        return dash >= 0 && long.TryParse(range[(dash + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var last)
+            ? last + 1
+            : 0;
+    }
+
+    private static async Task<int> ReadFullyAsync(Stream stream, byte[] buffer, int count, CancellationToken ct)
+    {
+        var read = 0;
+        while (read < count)
+        {
+            var n = await stream.ReadAsync(buffer.AsMemory(read, count - read), ct).ConfigureAwait(false);
+            if (n == 0) break;
+            read += n;
+        }
+        return read;
     }
 
     private Task UpdateTrackAsync(string editId, string track, string releaseName, long versionCode, string status,
@@ -192,14 +367,7 @@ public sealed class GooglePlayClient : IGooglePlayClient
 
     private async Task<JsonNode?> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        EnsureConfigured();
-        var token = await _token.Value.GetTokenAsync(ct).ConfigureAwait(false);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        // The URL carries only the package name and edit id — no secrets.
-        _log.LogDebug("{Method} {Url}", request.Method.Method, request.RequestUri);
-        using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+        using var response = await SendRawAsync(request, ct).ConfigureAwait(false);
         var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var status = (int)response.StatusCode;
 
@@ -210,6 +378,24 @@ public sealed class GooglePlayClient : IGooglePlayClient
             throw new GooglePlayException(status, detail);
         }
 
+        return ParseJson(text, status);
+    }
+
+    /// <summary>Authorises and sends; the caller owns the response and judges its status.</summary>
+    private async Task<HttpResponseMessage> SendRawAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        EnsureConfigured();
+        var token = await _token.Value.GetTokenAsync(ct).ConfigureAwait(false);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        // The URL carries only the package name, edit id and upload session — no secrets.
+        _log.LogDebug("{Method} {Url}", request.Method.Method, request.RequestUri);
+        return await _http.SendAsync(request, ct).ConfigureAwait(false);
+    }
+
+    private static JsonNode? ParseJson(string text, int status)
+    {
         if (string.IsNullOrWhiteSpace(text)) return null;
         try
         {
